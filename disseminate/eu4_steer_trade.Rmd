@@ -1,0 +1,108 @@
+---
+title: "Steer trade cheat sheet in EU4"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load package
+library(tidyverse)
+library(here)
+library(ggplot2)
+library(png)
+library(grid)
+library(igraph)
+library(rmarkdown)
+library(DT)
+```
+
+```{r data_wrangling, include=FALSE}
+# Read the list of trade nodes by the nodes they flow into
+trade_nodes <- read.csv(here("data/trade_nodes.csv")) %>% 
+  rename("trade_id" = "overall_order", "flows_to" = "connects_to")
+
+node_names <- trade_nodes %>% 
+  select(node, trade_id) %>% 
+  distinct() %>% 
+  arrange(desc(trade_id)) %>% 
+  select(node) %>% 
+  pull()
+
+# Create a graph of the trade nodes with the igraph package
+node_dag <- graph_from_data_frame(trade_nodes %>% 
+                                      select(parent = node, child = flows_to) %>% 
+                                      mutate(child = ifelse(is.na(child), parent, child)), 
+                                    vertices = trade_nodes %>% 
+                                      select(parent = node, trade_id) %>% 
+                                      distinct())
+
+# Loop over every node to get all possible DFS paths for merchant placement
+merchant_dfs <- function(node) {
+  dfs_result <- dfs(node_dag, root = node, mode = "in", unreachable = F)
+  data.frame(merchant_order = 0:(length(dfs_result$order) - 1), trade_node_id = dfs_result$order) %>% 
+    rownames_to_column("upstream_node_name") %>% 
+    mutate(home_node = node) 
+}
+
+merchant_order_lists <- lapply(node_names, merchant_dfs) %>% 
+  bind_rows() %>% 
+  mutate(home_node = factor(home_node, levels = node_names),
+         upstream_node_name = factor(upstream_node_name, levels = node_names),
+         trade_node_id = as.numeric(trade_node_id))
+
+```
+
+Lists for checking merchant placements from "Steer trade" action in Europa Universalis IV. The game performs a depth-first search on all the trade nodes upstream from the receiver's home node based on the order trade nodes are listed in <br /> */Europa Universalis IV/common/tradenodes/00_tradenodes.txt* to decide where the merchants should be placed. "Steer trade" won't place merchants into nodes outside the receiver's trade range, so the actual placement for the merchants will end up being in the first trade nodes within the receiver's trade range as they appear in the list below.
+
+Also check out [Okx's *How does trade steering in EU4 work?*](https://okx.sh/eu4trade/) for a more detailed description of how the steer trade action works and a proper plot of the nodes. 
+
+## Merchant placement 
+List of merchant placement orders into upstream trade nodes assuming infinite trade range for all home node positions. When placing the steerer's merchants for a given home node, the game checks whether the upstream nodes are within receiver's trade range in this exact order. If a checked node is within trade range a merchant gets placed there and if not the node is skipped. This continues until either all the steerer's merchants are placed or there are no more eligible upstream nodes.
+
+Select the home node of interest from the search box under column **Home node**.  
+
+```{r placement_table, echo=FALSE}
+merchant_order_table <- merchant_order_lists %>% 
+  mutate(merchant_order = ifelse(merchant_order == 0, "Home node", merchant_order)) %>% 
+  select(`Home node` = home_node, 
+         `Upstream node` = upstream_node_name, 
+         `Upstream node id` = trade_node_id, 
+         `Merchant placement order` = merchant_order)
+
+datatable(merchant_order_table, 
+              filter = 'top',
+              rownames = F,
+              options = list(dom = 't',
+                             ordering = F,
+                             pageLength = max(merchant_order_lists$merchant_order),
+                             searchCols = list(list(search = '["english_channel"]')))
+)
+```
+
+## Individual node order
+
+List of trade nodes and the upstream nodes in the order the game checks them with DFS algorithm.
+
+Select the node of interest from the search box under column **Current node**.  
+
+```{r order_table, echo=FALSE}
+dfs_order_table <- trade_nodes %>% 
+  filter(!is.na(flows_to)) %>% 
+  mutate(order_number = ifelse(is.na(flows_to), "NA", order_number),
+         flows_to = factor(flows_to, levels = node_names),
+         node = factor(node, levels = node_names)) %>% 
+  arrange(flows_to, order_number, node) %>% 
+  select(`Current node` = flows_to, 
+         `Upstream node` = node, 
+         `Algorthm order` = order_number)
+
+datatable(dfs_order_table,
+          filter = 'top',
+          rownames = F,
+          options = list(dom = 't',
+                         ordering = F,
+                         pageLength = max(trade_nodes$order_number) + 1,
+                         searchCols = list(list(search = '["english_channel"]')))
+)
+```
